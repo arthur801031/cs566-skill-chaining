@@ -67,3 +67,5 @@ venv/
 .ipynb_checkpoints
 
 bc_data/
+bc_checkpoints/
+bc_videos/
