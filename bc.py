@@ -188,12 +188,15 @@ class Evaluation:
             setattr(self._config, 'ps_ckpts', ps_ckpts)
             setattr(self._config, 'init_ckpt_path', 'log/chair_ingolf_0650.ps.ours.123/ckpt_00010649600.pt')
 
-        # prepare video directory
         if args.is_eval:
+            # prepare video directory
             self.ckpt_name = args.checkpoint.split('/')[-1].split('.')[0]
             self.videos_dir = '/'.join(os.path.join(args.model_save_dir, args.checkpoint).split('/')[:-1]) + '/videos'
             if not os.path.exists(self.videos_dir):
                 os.makedirs(self.videos_dir)
+
+            if args.eval_mode == 'two_policy':
+                self.p2_checkpoint = torch.load(os.path.join(args.model_save_dir, args.p2_checkpoint), map_location='cuda')
 
         self._env = make_env(self._config.env, self._config)
 
@@ -296,10 +299,17 @@ class Evaluation:
 
     def evaluate(self, checkpoint):
         policy_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
-
         policy_eval.cuda()
         policy_eval.load_state_dict(checkpoint['state_dict'])
         policy_eval.eval()
+
+        policies = []
+        if self.args.eval_mode == 'two_policy':
+            policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+            policy2_eval.cuda()
+            policy2_eval.load_state_dict(self.p2_checkpoint['state_dict'])
+            policy2_eval.eval()
+            policies = [policy_eval, policy2_eval]
 
         total_success, total_rewards, total_lengths = 0, 0, 0
         for ep in range(self.args.num_eval_eps):
@@ -313,15 +323,24 @@ class Evaluation:
             if self.args.is_eval:
                 record_frames.append(self._store_frame(self._env, ep_len, ep_rew))
 
+            subtask = 0
             while not done:
                 ob_image = self.get_ob_image(self._env)
-                action = policy_eval(ob_image)
+                if self.args.eval_mode == 'two_policy':
+                    action = policies[subtask](ob_image)
+                else:
+                    action = policy_eval(ob_image)
                 if len(action.shape) == 2:
                     action = action[0]
 
                 ob_next, reward, done, info = self._env.step(action.detach().cpu().numpy())
                 ep_len += 1
                 ep_rew += reward
+
+                if "subtask" in info and subtask != info["subtask"]:
+                    print(colored(f'Completed subtask {subtask}', "yellow"))
+                    subtask = info["subtask"]
+
                 # terminal/goal condition for policy sequencing algorithm (since we're only training 2 sub-policies)
                 if self._config.algo == 'ps' and info['subtask'] == 2:
                     done = True
@@ -337,7 +356,7 @@ class Evaluation:
                 total_success += 1
             if self.args.is_eval:
                 s_flag = 's' if 'episode_success' in info and info['episode_success'] else 'f'
-                self._save_video(f'{self.ckpt_name}_ep_{ep}_{ep_rew}_{s_flag}.mp4', record_frames)
+                self._save_video(f'{self.ckpt_name}_ep_{ep}_{ep_rew}_{subtask}_{s_flag}.mp4', record_frames)
             total_rewards += ep_rew
             total_lengths += ep_len
         del policy_eval
@@ -380,6 +399,8 @@ def main():
 
     ## evaluation arguments
     parser.add_argument('--is_eval', type=bool, default=False, help="Whether to perform evaluation")
+    parser.add_argument('--eval_mode', default='one_policy', choices=['one_policy', 'two_policy'])
+    parser.add_argument('--p2_checkpoint', type=str, default='epoch_12.pth', help="policy 2 checkpoint file")
 
     ## bc args
     parser.add_argument('--env_image_size', type=int, default=200, help="observation image size")
