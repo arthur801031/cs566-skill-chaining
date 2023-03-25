@@ -24,6 +24,7 @@ import sys
 import argparse
 from collections import OrderedDict
 from robot_learning.environments import make_env
+import imageio
 
 class BC_Visual_Policy_Stochastic(nn.Module):
     def __init__(self, action_size=256, img_size=128):
@@ -187,6 +188,13 @@ class Evaluation:
             setattr(self._config, 'ps_ckpts', ps_ckpts)
             setattr(self._config, 'init_ckpt_path', 'log/chair_ingolf_0650.ps.ours.123/ckpt_00010649600.pt')
 
+        # prepare video directory
+        if args.is_eval:
+            self.ckpt_name = args.checkpoint.split('/')[-1].split('.')[0]
+            self.videos_dir = '/'.join(os.path.join(args.model_save_dir, args.checkpoint).split('/')[:-1]) + '/videos'
+            if not os.path.exists(self.videos_dir):
+                os.makedirs(self.videos_dir)
+
         self._env = make_env(self._config.env, self._config)
 
     def get_ob_image(self, env):
@@ -208,6 +216,84 @@ class Evaluation:
         ob_image = torch.from_numpy(ob_image).double().cuda()
         return ob_image[None, :, :, :]
 
+    def _save_video(self, fname, frames, fps=15.0):
+        """ Saves @frames into a video with file name @fname. """
+        path = os.path.join(self.videos_dir, fname)
+
+        if np.issubdtype(frames[0].dtype, np.floating):
+            for i in range(len(frames)):
+                frames[i] = frames[i].astype(np.uint8)
+        imageio.mimsave(path, frames, fps=fps)
+        print(f'Video saved: {path}')
+        return path
+
+    def _store_frame(self, env, ep_len, ep_rew, info={}):
+        """ Renders a frame. """
+        color = (200, 200, 200)
+
+        # render video frame
+        frame = env.render("rgb_array")
+        if len(frame.shape) == 4:
+            frame = frame[0]
+        if np.max(frame) <= 1.0:
+            frame *= 255.0
+        frame = frame.astype(np.uint8)
+
+        h, w = frame.shape[:2]
+        if h < 512:
+            h, w = 512, 512
+            frame = cv2.resize(frame, (h, w))
+        frame = np.concatenate([frame, np.zeros((h, w, 3))], 0)
+        scale = h / 512
+
+        # add caption to video frame
+        if self._config.record_video_caption:
+            text = "{:4} {}".format(ep_len, ep_rew)
+            font_size = 0.4 * scale
+            thickness = 1
+            offset = int(12 * scale)
+            x, y = int(5 * scale), h + int(10 * scale)
+            cv2.putText(
+                frame,
+                text,
+                (x, y),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                font_size,
+                (255, 255, 0),
+                thickness,
+                cv2.LINE_AA,
+            )
+            for i, k in enumerate(info.keys()):
+                v = info[k]
+                key_text = "{}: ".format(k)
+                (key_width, _), _ = cv2.getTextSize(
+                    key_text, cv2.FONT_HERSHEY_SIMPLEX, font_size, thickness
+                )
+
+                cv2.putText(
+                    frame,
+                    key_text,
+                    (x, y + offset * (i + 2)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    font_size,
+                    (66, 133, 244),
+                    thickness,
+                    cv2.LINE_AA,
+                )
+
+                cv2.putText(
+                    frame,
+                    str(v),
+                    (x + key_width, y + offset * (i + 2)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    font_size,
+                    (255, 255, 255),
+                    thickness,
+                    cv2.LINE_AA,
+                )
+
+        return frame
+
     def evaluate(self, checkpoint):
         policy_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
 
@@ -223,6 +309,10 @@ class Evaluation:
             ep_len = 0
             ep_rew = 0
 
+            record_frames = []
+            if self.args.is_eval:
+                record_frames.append(self._store_frame(self._env, ep_len, ep_rew))
+
             while not done:
                 ob_image = self.get_ob_image(self._env)
                 action = policy_eval(ob_image)
@@ -237,10 +327,17 @@ class Evaluation:
                     done = True
                     info['episode_success'] = True
 
+                if self.args.is_eval:
+                    frame_info = info.copy()
+                    record_frames.append(self._store_frame(self._env, ep_len, ep_rew, frame_info))
+
             print(colored(f"Current Episode Total Rewards: {ep_rew}, Episode Length: {ep_len}", "yellow"))
             if 'episode_success' in info and info['episode_success']:
                 print(colored(f"{info['episode_success']}!", "yellow"), "\n")
                 total_success += 1
+            if self.args.is_eval:
+                s_flag = 's' if 'episode_success' in info and info['episode_success'] else 'f'
+                self._save_video(f'{self.ckpt_name}_ep_{ep}_{ep_rew}_{s_flag}.mp4', record_frames)
             total_rewards += ep_rew
             total_lengths += ep_len
         del policy_eval
@@ -281,10 +378,12 @@ def main():
     parser.add_argument('--num_eval_eps', type=int, default=20, help="number of episodes to run during evaluation")
     parser.add_argument('--eval_interval', type=int, default=1, help="evaluation_interval")
 
+    ## evaluation arguments
+    parser.add_argument('--is_eval', type=bool, default=False, help="Whether to perform evaluation")
+
     ## bc args
     parser.add_argument('--env_image_size', type=int, default=200, help="observation image size")
     parser.add_argument('--action_size', type=int, default=9, help="dimension of the action space")
-    parser.add_argument('--bc_video_dir', type=str, default='./bc_videos', help="directory to store behavioral cloning video simulations")
 
     ## skill-chaining args
     parser.add_argument('--furniture_name', type=str, default='chair_ingolf_0650', help="furniture_name")
@@ -337,7 +436,7 @@ def main():
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma)
 
     # load from checkpoint
-    if args.load_saved:
+    if args.load_saved or args.is_eval:
         checkpoint = torch.load(os.path.join(args.model_save_dir, args.checkpoint), map_location='cuda')
         start_epoch = checkpoint['epoch']
         policy.load_state_dict(checkpoint['state_dict'])
@@ -352,86 +451,90 @@ def main():
     else:
         start_epoch = args.start_epoch
 
-    dataset = StateImageActionDataset(args, args.bc_data, transform=transform)
-    dataset_length = len(dataset)
-    train_dataset, _ = torch.utils.data.random_split(dataset, [dataset_length, 0])
-    dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True)
-
-    train_loss = []
-
     policy.cuda()
     mse_loss.cuda()
 
-    args.model_save_dir = os.path.join(args.model_save_dir, run_name)
-    if not os.path.exists(args.model_save_dir):
-        os.makedirs(args.model_save_dir)
-    if not os.path.exists(args.bc_video_dir):
-        os.makedirs(args.bc_video_dir)
-
     evaluation_obj = Evaluation(args)
 
-    print('Total number of state-action pairs: ', dataset_length)
-    outer = tqdm(total=args.end_epoch-start_epoch, desc='Epoch', position=start_epoch)
-    for epoch in range(start_epoch, args.end_epoch):
-        total_loss = 0.0
+    if args.is_eval:
+        total_success, total_rewards, total_lengths = evaluation_obj.evaluate(checkpoint)
+        print(f'Success rate: {(total_success / args.num_eval_eps) * 100}%')
+        print(f'Average rewards: {total_rewards / args.num_eval_eps}')
+        print(f'Average episode length: {total_lengths / args.num_eval_eps}')
+    else:
+        args.model_save_dir = os.path.join(args.model_save_dir, run_name)
+        if not os.path.exists(args.model_save_dir):
+            os.makedirs(args.model_save_dir)
 
-        policy.train()
+        dataset = StateImageActionDataset(args, args.bc_data, transform=transform)
+        dataset_length = len(dataset)
+        train_dataset, _ = torch.utils.data.random_split(dataset, [dataset_length, 0])
+        dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True)
 
-        print('\nprocessing training batch...')
-        for i, batch in enumerate(tqdm(dataloader_train)):
-            ac, img = batch['ac'], batch['img']
-            ac = ac.double().cuda()
-            img = img.double().cuda()
+        train_loss = []
 
-            ac_pred = policy(img)
-            # ac mse
-            ac_predictor_loss = mse_loss(ac_pred, ac)
-            optimizer.zero_grad()
-            ac_predictor_loss.backward()
-            optimizer.step()
-            total_loss += ac_predictor_loss.data.item()
+        print('Total number of state-action pairs: ', dataset_length)
+        outer = tqdm(total=args.end_epoch-start_epoch, desc='Epoch', position=start_epoch)
+        for epoch in range(start_epoch, args.end_epoch):
+            total_loss = 0.0
 
-        training_loss = total_loss / (args.batch_size*len(dataloader_train))
-        train_loss.append(training_loss)
+            policy.train()
 
-        print('')
-        print('----------------------------------------------------------------------')
-        print('Epoch #' + str(epoch))
-        print('Action Prediction Loss (Train): ' + str(training_loss))
-        print('----------------------------------------------------------------------')
+            print('\nprocessing training batch...')
+            for i, batch in enumerate(tqdm(dataloader_train)):
+                ac, img = batch['ac'], batch['img']
+                ac = ac.double().cuda()
+                img = img.double().cuda()
 
-        scheduler.step()
-        # arrange/save checkpoint
-        checkpoint = {
-            'epoch': epoch + 1,
-            'state_dict': policy.state_dict(),
-            'optimizer': optimizer.state_dict(),
-            'scheduler': scheduler.state_dict(),
-        }
-        torch.save(checkpoint, os.path.join(args.model_save_dir, 'epoch_{}.pth'.format(epoch)))
+                ac_pred = policy(img)
+                # ac mse
+                ac_predictor_loss = mse_loss(ac_pred, ac)
+                optimizer.zero_grad()
+                ac_predictor_loss.backward()
+                optimizer.step()
+                total_loss += ac_predictor_loss.data.item()
 
-        policy.eval()
-        # perform validation
-        if epoch % args.eval_interval == 0:
-            total_success, total_rewards, total_lengths = evaluation_obj.evaluate(checkpoint)
-        else:
-            total_success, total_rewards, total_lengths = -1, -1, -1
+            training_loss = total_loss / (args.batch_size*len(dataloader_train))
+            train_loss.append(training_loss)
 
-        # wandb logging
-        if args.wandb:
-            wandb.log({
-                "Epoch": epoch,
-                "Total Success": total_success,
-                "Total Rewards": total_rewards,
-                "Total Lengths": total_lengths,
-                "Action Prediction Loss (Train)": training_loss,
-            })
-        else:
-            plt.plot(train_loss, label="train loss")
-            plt.legend()
-            plt.savefig(os.path.join(args.bc_video_dir, 'train_loss_plots.png'))
-            plt.close()
-        outer.update(1)
+            print('')
+            print('----------------------------------------------------------------------')
+            print('Epoch #' + str(epoch))
+            print('Action Prediction Loss (Train): ' + str(training_loss))
+            print('----------------------------------------------------------------------')
+
+            scheduler.step()
+            # arrange/save checkpoint
+            checkpoint = {
+                'epoch': epoch + 1,
+                'state_dict': policy.state_dict(),
+                'optimizer': optimizer.state_dict(),
+                'scheduler': scheduler.state_dict(),
+            }
+            torch.save(checkpoint, os.path.join(args.model_save_dir, 'epoch_{}.pth'.format(epoch)))
+
+            policy.eval()
+            # perform validation
+            if epoch % args.eval_interval == 0:
+                total_success, total_rewards, total_lengths = evaluation_obj.evaluate(checkpoint)
+            else:
+                total_success, total_rewards, total_lengths = -1, -1, -1
+
+            # wandb logging
+            if args.wandb:
+                wandb.log({
+                    "Epoch": epoch,
+                    "Total Success": total_success,
+                    "Total Rewards": total_rewards,
+                    "Total Lengths": total_lengths,
+                    "Action Prediction Loss (Train)": training_loss,
+                })
+            else:
+                plt.plot(train_loss, label="train loss")
+                plt.legend()
+                plt.savefig(os.path.join(args.model_save_dir, 'train_loss_plots.png'))
+                plt.close()
+            outer.update(1)
 
 if __name__ == "__main__":
     main()
