@@ -171,13 +171,21 @@ class Evaluation:
         setattr(self._config, 'furniture_name', args.furniture_name)
         setattr(self._config, 'env', 'IKEASawyerDense-v0')
         setattr(self._config, 'demo_path', args.demo_path)
-        setattr(self._config, 'num_connects', 1)
+        setattr(self._config, 'num_connects', args.num_connects)
         setattr(self._config, 'run_prefix', args.run_prefix)
         setattr(self._config, 'is_train', False)
         setattr(self._config, 'record_video', False)
         if args.preassembled >= 0:
             preassembled = [i for i in range(0, args.preassembled+1)]
             setattr(self._config, 'preassembled', preassembled)
+        if args.algo == 'ps':
+            # specific parameters for ps algorithm
+            # ARTHUR: hard-coded values
+            ps_demo_paths = ['demos/chair_ingolf/Sawyer_chair_ingolf_0650_0', 'demos/chair_ingolf/Sawyer_chair_ingolf_0650_1']
+            setattr(self._config, 'ps_demo_paths', ps_demo_paths)
+            ps_ckpts = ['log/chair_ingolf_0650.gail.p0.123/ckpt_00011468800.pt', 'log/chair_ingolf_0650.gail.p1.123/ckpt_00017203200.pt']
+            setattr(self._config, 'ps_ckpts', ps_ckpts)
+            setattr(self._config, 'init_ckpt_path', 'log/chair_ingolf_0650.ps.ours.123/ckpt_00010649600.pt')
 
         self._env = make_env(self._config.env, self._config)
 
@@ -224,6 +232,10 @@ class Evaluation:
                 ob_next, reward, done, info = self._env.step(action.detach().cpu().numpy())
                 ep_len += 1
                 ep_rew += reward
+                # terminal/goal condition for policy sequencing algorithm (since we're only training 2 sub-policies)
+                if self._config.algo == 'ps' and info['subtask'] == 2:
+                    done = True
+                    info['episode_success'] = True
 
             print(colored(f"Current Episode Total Rewards: {ep_rew}, Episode Length: {ep_len}", "yellow"))
             if 'episode_success' in info and info['episode_success']:
@@ -280,6 +292,7 @@ def main():
     parser.add_argument('--run_prefix', type=str, default='p0', help="run_prefix")
     parser.add_argument('--algo', type=str, default='gail', help="algo")
     parser.add_argument('--preassembled', type=int, default=-1, help="preassembled")
+    parser.add_argument('--num_connects', type=int, default=1, help="num_connects")
 
     args = parser.parse_args()
 
@@ -325,8 +338,7 @@ def main():
 
     # load from checkpoint
     if args.load_saved:
-        # TODO: not tested
-        checkpoint = torch.load(os.path.join(args.model_save_dir, args.checkpoint), map_location='cuda:0')
+        checkpoint = torch.load(os.path.join(args.model_save_dir, args.checkpoint), map_location='cuda')
         start_epoch = checkpoint['epoch']
         policy.load_state_dict(checkpoint['state_dict'])
         optimizer.load_state_dict(checkpoint['optimizer'])
