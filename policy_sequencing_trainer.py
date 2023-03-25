@@ -201,6 +201,7 @@ class PolicySequencingTrainer(Trainer):
             for rollout in rollouts:
                 new_rollout = {
                     "obs": rollout["ob"],
+                    "ob_images": rollout["ob_image"],
                     "actions": rollout["ac"],
                     "rewards": rollout["rew"],
                     "dones": rollout["done"],
@@ -212,7 +213,7 @@ class PolicySequencingTrainer(Trainer):
                 step,
                 self._config.num_eval,
             )
-            path = os.path.join(self._config.demo_dir, fname)
+            path = os.path.join('bc_data', fname)
             logger.warn("[*] Generating demo: {}".format(path))
             with open(path, "wb") as f:
                 pickle.dump(new_rollouts, f)
@@ -254,7 +255,11 @@ class PolicySequencingTrainer(Trainer):
             rollout, info, frames = self._runner.run_episode(
                 is_train=False, record_video=record_video, partial=partial
             )
-            rollouts.append(rollout)
+            # ARTHUR: hard-coded max length
+            if len(rollout['ob']) < 300:
+                rollouts.append(rollout)
+            else:
+                print('Skip adding rollout because it failed')
 
             if record_video:
                 ep_rew = info["rew"]

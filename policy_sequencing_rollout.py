@@ -271,6 +271,13 @@ class PolicySequencingRolloutRunner(RolloutRunner):
             # sample action from policy
             ac, ac_before_activation = agent[subtask].act(ob, is_train=is_train)
 
+            ob_image = env.render("rgb_array")
+            if len(ob_image.shape) == 4:
+                ob_image = ob_image[0]
+            if np.max(ob_image) <= 1.0:
+                ob_image *= 255.0
+            ob_image = ob_image.astype(np.uint8)
+
             # take a step
             ob_next, reward, done, info = env.step(ac)
             if il:
@@ -302,6 +309,7 @@ class PolicySequencingRolloutRunner(RolloutRunner):
             rollout.add(
                 {
                     "ob": ob,
+                    "ob_image": ob_image,
                     "ac": ac,
                     "ac_before_activation": ac_before_activation,
                     "done": done,
@@ -310,9 +318,9 @@ class PolicySequencingRolloutRunner(RolloutRunner):
             )
 
             # arthur's code
-            # if info['subtask'] == 2:
-            #     done = True
-            #     info['episode_success'] = True
+            if info['subtask'] == 2:
+                done = True
+                info['episode_success'] = True
             reward_info.add(info)
             if record_video:
                 frame_info = info.copy()

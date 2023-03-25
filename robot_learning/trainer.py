@@ -370,6 +370,7 @@ class Trainer(object):
             rollout, info, frames = self._runner.run_episode(
                 is_train=False, record_video=record_video
             )
+            # ARTHUR: hard-coded max length
             if len(rollout["ob"]) < 150:
                 rollouts.append(rollout)
             else:
