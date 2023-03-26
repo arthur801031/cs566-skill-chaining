@@ -37,6 +37,8 @@ class Rollout(object):
         batch["done"] = self._history["done"]
         batch["done_mask"] = self._history["done_mask"]
         batch["rew"] = self._history["rew"]
+        if 'subtask' in self._history:
+            batch["subtask"] = self._history["subtask"]
         self._history = defaultdict(list)
         return batch
 

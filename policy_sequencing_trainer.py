@@ -202,6 +202,7 @@ class PolicySequencingTrainer(Trainer):
                 new_rollout = {
                     "obs": rollout["ob"],
                     "ob_images": rollout["ob_image"],
+                    "subtasks": rollout["subtask"],
                     "actions": rollout["ac"],
                     "rewards": rollout["rew"],
                     "dones": rollout["done"],

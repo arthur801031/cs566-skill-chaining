@@ -271,6 +271,7 @@ class PolicySequencingRolloutRunner(RolloutRunner):
             # sample action from policy
             ac, ac_before_activation = agent[subtask].act(ob, is_train=is_train)
 
+            prev_subtask = subtask
             ob_image = env.render("rgb_array")
             if len(ob_image.shape) == 4:
                 ob_image = ob_image[0]
@@ -310,6 +311,7 @@ class PolicySequencingRolloutRunner(RolloutRunner):
                 {
                     "ob": ob,
                     "ob_image": ob_image,
+                    'subtask': prev_subtask,
                     "ac": ac,
                     "ac_before_activation": ac_before_activation,
                     "done": done,
