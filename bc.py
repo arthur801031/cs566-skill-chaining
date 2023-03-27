@@ -112,10 +112,18 @@ class StateImageActionDataset(Dataset):
             'actions': [],
         }
         for rollout in tmp_data:
-            for ob_image, action in zip(rollout['ob_images'], rollout['actions']):
-                ob_image = cv2.resize(ob_image, (self.config.env_image_size, self.config.env_image_size))
-                self.data['ob_images'].append(np.transpose(ob_image, (2, 0, 1)))
-                self.data['actions'].append(action['default'])
+            import pdb; pdb.set_trace()
+            if self.config.subtask_id == -1:
+                for ob_image, action in zip(rollout['ob_images'], rollout['actions']):
+                    ob_image = cv2.resize(ob_image, (self.config.env_image_size, self.config.env_image_size))
+                    self.data['ob_images'].append(np.transpose(ob_image, (2, 0, 1)))
+                    self.data['actions'].append(action['default'])
+            else:
+                for ob_image, action, subtask_id in zip(rollout['ob_images'], rollout['actions'], rollout['subtasks']):
+                    if self.config.subtask_id == subtask_id:
+                        ob_image = cv2.resize(ob_image, (self.config.env_image_size, self.config.env_image_size))
+                        self.data['ob_images'].append(np.transpose(ob_image, (2, 0, 1)))
+                        self.data['actions'].append(action['default'])
 
     def random_crop_and_pad(self, img, crop=84):
         """
@@ -378,6 +386,7 @@ def main():
     parser.add_argument('--bc_data', type=str, default='./bc_data/chair_ingolf_0650.gail.p0.123_step_00011468800_2_trajs.pkl', help="file to load saved expert demonstrations from")
     parser.add_argument('--seed', type=int, default=1234, help="torch seed value")
     parser.add_argument('--num_threads', type=int, default=1, help="number of threads for execution")
+    parser.add_argument('--subtask_id', type=int, default=-1, help="subtask_id is used to retrieve subtask_id data from demonstrations")
 
     ## data augmentation
     parser.add_argument('--img_aug', type=bool, default=False, help="whether to use data augmentations on images")
@@ -490,7 +499,7 @@ def main():
         dataset = StateImageActionDataset(args, args.bc_data, transform=transform)
         dataset_length = len(dataset)
         train_dataset, _ = torch.utils.data.random_split(dataset, [dataset_length, 0])
-        dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True)
+        dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=True)
 
         train_loss = []
 
