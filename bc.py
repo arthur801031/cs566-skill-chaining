@@ -112,7 +112,6 @@ class StateImageActionDataset(Dataset):
             'actions': [],
         }
         for rollout in tmp_data:
-            import pdb; pdb.set_trace()
             if self.config.subtask_id == -1:
                 for ob_image, action in zip(rollout['ob_images'], rollout['actions']):
                     ob_image = cv2.resize(ob_image, (self.config.env_image_size, self.config.env_image_size))
@@ -499,7 +498,7 @@ def main():
         dataset = StateImageActionDataset(args, args.bc_data, transform=transform)
         dataset_length = len(dataset)
         train_dataset, _ = torch.utils.data.random_split(dataset, [dataset_length, 0])
-        dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=0, drop_last=True)
+        dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True)
 
         train_loss = []
 
