@@ -120,6 +120,11 @@ class StateImageActionDataset(Dataset):
             else:
                 for ob_image, action, subtask_id in zip(rollout['ob_images'], rollout['actions'], rollout['subtasks']):
                     if self.config.subtask_id == subtask_id:
+                        # # DEBUG observation image
+                        # sample_img = ob_image
+                        # sample_img = cv2.cvtColor(sample_img, cv2.COLOR_RGB2BGR)
+                        # cv2.imwrite('./input_image_bc_load_test_subtask1.png', sample_img)
+                        # import pdb; pdb.set_trace()
                         ob_image = cv2.resize(ob_image, (self.config.env_image_size, self.config.env_image_size))
                         self.data['ob_images'].append(np.transpose(ob_image, (2, 0, 1)))
                         self.data['actions'].append(action['default'])
@@ -195,6 +200,7 @@ class Evaluation:
             setattr(self._config, 'ps_ckpts', ps_ckpts)
             setattr(self._config, 'init_ckpt_path', 'log/chair_ingolf_0650.ps.ours.123/ckpt_00010649600.pt')
 
+        self.two_policy_training = False
         if args.is_eval:
             # prepare video directory
             self.ckpt_name = args.checkpoint.split('/')[-1].split('.')[0]
@@ -204,6 +210,16 @@ class Evaluation:
 
             if args.eval_mode == 'two_policy':
                 self.p2_checkpoint = torch.load(os.path.join(args.model_save_dir, args.p2_checkpoint), map_location='cuda')
+        else:
+            if args.train_mode == 'two_policy':
+                self.policy1_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+                self.policy1_eval.cuda()
+                self.policy1_eval.load_state_dict(torch.load(os.path.join(args.model_save_dir, args.p1_checkpoint), map_location='cuda')['state_dict'])
+                self.policy1_eval.eval()
+                # freeze all layers
+                for param in self.policy1_eval.parameters():
+                    param.requires_grad = False
+                self.two_policy_training = True
 
         self._env = make_env(self._config.env, self._config)
 
@@ -305,20 +321,30 @@ class Evaluation:
         return frame
 
     def evaluate(self, checkpoint):
-        policy_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
-        policy_eval.cuda()
-        policy_eval.load_state_dict(checkpoint['state_dict'])
-        policy_eval.eval()
-
         policies = []
-        if self.args.eval_mode == 'two_policy':
+        self.policy_list_enable = False
+        if self.two_policy_training:
             policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
             policy2_eval.cuda()
-            policy2_eval.load_state_dict(self.p2_checkpoint['state_dict'])
+            policy2_eval.load_state_dict(checkpoint['state_dict'])
             policy2_eval.eval()
-            policies = [policy_eval, policy2_eval]
+            policies = [self.policy1_eval, policy2_eval]
+            self.policy_list_enable = True
+        else:
+            policy_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+            policy_eval.cuda()
+            policy_eval.load_state_dict(checkpoint['state_dict'])
+            policy_eval.eval()
 
-        total_success, total_rewards, total_lengths = 0, 0, 0
+            if self.args.eval_mode == 'two_policy':
+                policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+                policy2_eval.cuda()
+                policy2_eval.load_state_dict(self.p2_checkpoint['state_dict'])
+                policy2_eval.eval()
+                policies = [policy_eval, policy2_eval]
+                self.policy_list_enable = True
+
+        total_success, total_rewards, total_lengths, total_subtasks = 0, 0, 0, 0
         for ep in range(self.args.num_eval_eps):
             obs = self._env.reset()
 
@@ -333,7 +359,7 @@ class Evaluation:
             subtask = 0
             while not done:
                 ob_image = self.get_ob_image(self._env)
-                if self.args.eval_mode == 'two_policy':
+                if self.policy_list_enable:
                     action = policies[subtask](ob_image)
                 else:
                     action = policy_eval(ob_image)
@@ -366,8 +392,8 @@ class Evaluation:
                 self._save_video(f'{self.ckpt_name}_ep_{ep}_{ep_rew}_{subtask}_{s_flag}.mp4', record_frames)
             total_rewards += ep_rew
             total_lengths += ep_len
-        del policy_eval
-        return total_success, total_rewards, total_lengths
+            total_subtasks += subtask
+        return total_success, total_rewards, total_lengths, total_subtasks
 
 def main():
     parser = argparse.ArgumentParser()
@@ -386,6 +412,8 @@ def main():
     parser.add_argument('--seed', type=int, default=1234, help="torch seed value")
     parser.add_argument('--num_threads', type=int, default=1, help="number of threads for execution")
     parser.add_argument('--subtask_id', type=int, default=-1, help="subtask_id is used to retrieve subtask_id data from demonstrations")
+    parser.add_argument('--train_mode', default='one_policy', choices=['one_policy', 'two_policy'])
+    parser.add_argument('--p1_checkpoint', type=str, default='epoch_12.pth', help="policy 1 checkpoint file (frozen but use during training's validation)")
 
     ## data augmentation
     parser.add_argument('--img_aug', type=bool, default=False, help="whether to use data augmentations on images")
@@ -486,10 +514,11 @@ def main():
     evaluation_obj = Evaluation(args)
 
     if args.is_eval:
-        total_success, total_rewards, total_lengths = evaluation_obj.evaluate(checkpoint)
+        total_success, total_rewards, total_lengths, total_subtasks = evaluation_obj.evaluate(checkpoint)
         print(f'Success rate: {(total_success / args.num_eval_eps) * 100}%')
         print(f'Average rewards: {total_rewards / args.num_eval_eps}')
         print(f'Average episode length: {total_lengths / args.num_eval_eps}')
+        print(f'Average subtasks: {total_subtasks / args.num_eval_eps}')
     else:
         args.model_save_dir = os.path.join(args.model_save_dir, run_name)
         if not os.path.exists(args.model_save_dir):
@@ -545,9 +574,9 @@ def main():
             policy.eval()
             # perform validation
             if epoch % args.eval_interval == 0:
-                total_success, total_rewards, total_lengths = evaluation_obj.evaluate(checkpoint)
+                total_success, total_rewards, total_lengths, total_subtasks = evaluation_obj.evaluate(checkpoint)
             else:
-                total_success, total_rewards, total_lengths = -1, -1, -1
+                total_success, total_rewards, total_lengths, total_subtasks = -1, -1, -1, -1
 
             # wandb logging
             if args.wandb:
@@ -556,6 +585,7 @@ def main():
                     "Total Success": total_success,
                     "Total Rewards": total_rewards,
                     "Total Lengths": total_lengths,
+                    "Total Subtasks": total_subtasks,
                     "Action Prediction Loss (Train)": training_loss,
                 })
             else:
