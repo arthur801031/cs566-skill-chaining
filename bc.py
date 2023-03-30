@@ -203,7 +203,7 @@ class Evaluation:
         self.two_policy_training = False
         if args.is_eval:
             # prepare video directory
-            self.ckpt_name = args.checkpoint.split('/')[-1].split('.')[0]
+            self.p2_ckpt_name = args.p2_checkpoint.split('/')[-1].split('.')[0]
             self.videos_dir = '/'.join(os.path.join(args.model_save_dir, args.checkpoint).split('/')[:-1]) + '/videos'
             if not os.path.exists(self.videos_dir):
                 os.makedirs(self.videos_dir)
@@ -389,7 +389,7 @@ class Evaluation:
                 total_success += 1
             if self.args.is_eval:
                 s_flag = 's' if 'episode_success' in info and info['episode_success'] else 'f'
-                self._save_video(f'{self.ckpt_name}_ep_{ep}_{ep_rew}_{subtask}_{s_flag}.mp4', record_frames)
+                self._save_video(f'{self.p2_ckpt_name}_ep_{ep}_{ep_rew}_{subtask}_{s_flag}.mp4', record_frames)
             total_rewards += ep_rew
             total_lengths += ep_len
             total_subtasks += subtask
