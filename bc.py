@@ -204,7 +204,7 @@ class Evaluation:
         if args.is_eval:
             # prepare video directory
             self.p2_ckpt_name = args.p2_checkpoint.split('/')[-1].split('.')[0]
-            self.videos_dir = '/'.join(os.path.join(args.model_save_dir, args.checkpoint).split('/')[:-1]) + '/videos'
+            self.videos_dir = '/'.join(os.path.join(args.model_save_dir, args.p2_checkpoint).split('/')[:-1]) + '/videos'
             if not os.path.exists(self.videos_dir):
                 os.makedirs(self.videos_dir)
 
