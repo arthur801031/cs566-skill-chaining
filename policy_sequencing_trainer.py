@@ -251,11 +251,22 @@ class PolicySequencingTrainer(Trainer):
         logger.info("Run %d evaluations at step=%d", self._config.num_eval, step)
         rollouts = []
         info_history = Info()
+        num_subtask2_success = 0
+        num_subtask1_success = 0
         for i in range(self._config.num_eval):
             logger.warn("Evalute run %d", i + 1)
             rollout, info, frames = self._runner.run_episode(
                 is_train=False, record_video=record_video, partial=partial
             )
+            # ARTHUR: track success rate of sub-tasks 1 and 2
+            if 'episode_success' in info and info['episode_success']:
+                num_subtask2_success += 1
+                num_subtask1_success += 1 # since sub-task 2 is completed, sub-task 1 must have been completed
+            else:
+                last_subtask_num = rollout['subtask'][-1]
+                if last_subtask_num == 1:
+                    num_subtask1_success += 1
+
             # ARTHUR: hard-coded max length
             if len(rollout['ob']) < 300:
                 rollouts.append(rollout)
@@ -288,4 +299,6 @@ class PolicySequencingTrainer(Trainer):
 
             info_history.add(info)
 
+        print(f'Success rate of Sub-task 2: {(num_subtask2_success / self._config.num_eval) * 100}%')
+        print(f'Success rate of Sub-task 1: {(num_subtask1_success / self._config.num_eval) * 100}%')
         return rollouts, info_history
