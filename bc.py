@@ -344,6 +344,8 @@ class Evaluation:
                 policies = [policy_eval, policy2_eval]
                 self.policy_list_enable = True
 
+        num_subtask2_success = 0
+        num_subtask1_success = 0
         total_success, total_rewards, total_lengths, total_subtasks = 0, 0, 0, 0
         for ep in range(self.args.num_eval_eps):
             obs = self._env.reset()
@@ -387,12 +389,20 @@ class Evaluation:
             if 'episode_success' in info and info['episode_success']:
                 print(colored(f"{info['episode_success']}!", "yellow"), "\n")
                 total_success += 1
+                num_subtask2_success += 1
+                num_subtask1_success += 1 # since sub-task 2 is completed, sub-task 1 must have been completed
+            else:
+                if info["subtask"] == 1:
+                    num_subtask1_success += 1
             if self.args.is_eval:
                 s_flag = 's' if 'episode_success' in info and info['episode_success'] else 'f'
                 self._save_video(f'{self.p2_ckpt_name}_ep_{ep}_{ep_rew}_{subtask}_{s_flag}.mp4', record_frames)
             total_rewards += ep_rew
             total_lengths += ep_len
             total_subtasks += subtask
+        # output success rate of sub-tasks 1 and 2
+        print(f'Success rate of Sub-task 2: {(num_subtask2_success / self.args.num_eval_eps) * 100}%')
+        print(f'Success rate of Sub-task 1: {(num_subtask1_success / self.args.num_eval_eps) * 100}%')
         return total_success, total_rewards, total_lengths, total_subtasks
 
 def main():
