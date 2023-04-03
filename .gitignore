@@ -66,6 +66,8 @@ venv/
 **/*.ipynb
 .ipynb_checkpoints
 
+launch.sh
+
 bc_data/
 bc_checkpoints/
 bc_videos/
