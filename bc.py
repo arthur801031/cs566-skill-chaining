@@ -170,6 +170,58 @@ class StateImageActionDataset(Dataset):
         out = {'ac': ac, 'img': img}
         return out
 
+class StateImageActionJointTrainingDataset(Dataset):
+    def __init__(self, config, pickle_file, transform=None):
+        self.config = config
+        self.load_data(pickle_file)
+        self.transform = transform
+
+    def __len__(self):
+        return min(len(self.data['p1_ob_images']), len(self.data['p2_ob_images']))
+
+    def load_data(self, pickle_file):
+        rollout_file = open(pickle_file, 'rb')
+        tmp_data = pickle.load(rollout_file)
+        rollout_file.close()
+        self.data = {
+            'p1_ob_images': [],
+            'p1_actions': [],
+            'p2_ob_images': [],
+            'p2_actions': [],
+        }
+        for rollout in tmp_data:
+            for ob_image, action, subtask_id in zip(rollout['ob_images'], rollout['actions'], rollout['subtasks']):
+                ob_image = cv2.resize(ob_image, (self.config.env_image_size, self.config.env_image_size))
+                if subtask_id == 0:
+                    # # DEBUG observation image
+                    # sample_img = ob_image
+                    # sample_img = cv2.cvtColor(sample_img, cv2.COLOR_RGB2BGR)
+                    # cv2.imwrite('./input_image_bc_load_test_subtask1.png', sample_img)
+                    # import pdb; pdb.set_trace()
+                    self.data['p1_ob_images'].append(np.transpose(ob_image, (2, 0, 1)))
+                    self.data['p1_actions'].append(action['default'])
+                else:
+                    # subtask_id == 1
+                    self.data['p2_ob_images'].append(np.transpose(ob_image, (2, 0, 1)))
+                    self.data['p2_actions'].append(action['default'])
+
+    def __getitem__(self, idx):
+        if torch.is_tensor(idx):
+            idx = idx.tolist()
+
+        p1_img = self.data['p1_ob_images'][idx]
+        p1_ac = self.data['p1_actions'][idx]
+        p1_img = torch.from_numpy(p1_img)
+        p1_ac = torch.from_numpy(p1_ac)
+
+        p2_img = self.data['p2_ob_images'][idx]
+        p2_ac = self.data['p2_actions'][idx]
+        p2_img = torch.from_numpy(p2_img)
+        p2_ac = torch.from_numpy(p2_ac)
+
+        out = {'p1_ac': p1_ac, 'p1_img': p1_img, 'p2_ac': p2_ac, 'p2_img': p2_img}
+        return out
+
 class Evaluation:
     def __init__(self, args):
         self.args = args
@@ -200,7 +252,6 @@ class Evaluation:
             setattr(self._config, 'ps_ckpts', ps_ckpts)
             setattr(self._config, 'init_ckpt_path', 'log/chair_ingolf_0650.ps.ours.123/ckpt_00010649600.pt')
 
-        self.two_policy_training = False
         if args.is_eval:
             # prepare video directory
             self.p2_ckpt_name = args.p2_checkpoint.split('/')[-1].split('.')[0]
@@ -219,7 +270,6 @@ class Evaluation:
                 # freeze all layers
                 for param in self.policy1_eval.parameters():
                     param.requires_grad = False
-                self.two_policy_training = True
 
         self._env = make_env(self._config.env, self._config)
 
@@ -323,12 +373,24 @@ class Evaluation:
     def evaluate(self, checkpoint):
         policies = []
         self.policy_list_enable = False
-        if self.two_policy_training:
+        if self.args.train_mode == 'two_policy':
             policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
             policy2_eval.cuda()
             policy2_eval.load_state_dict(checkpoint['state_dict'])
             policy2_eval.eval()
             policies = [self.policy1_eval, policy2_eval]
+            self.policy_list_enable = True
+        elif self.args.train_mode == 'joint_training':
+            policy1_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+            policy1_eval.cuda()
+            policy1_eval.load_state_dict(checkpoint['p1_state_dict'])
+            policy1_eval.eval()
+
+            policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+            policy2_eval.cuda()
+            policy2_eval.load_state_dict(checkpoint['p2_state_dict'])
+            policy2_eval.eval()
+            policies = [policy1_eval, policy2_eval]
             self.policy_list_enable = True
         else:
             policy_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
@@ -422,7 +484,7 @@ def main():
     parser.add_argument('--seed', type=int, default=1234, help="torch seed value")
     parser.add_argument('--num_threads', type=int, default=1, help="number of threads for execution")
     parser.add_argument('--subtask_id', type=int, default=-1, help="subtask_id is used to retrieve subtask_id data from demonstrations")
-    parser.add_argument('--train_mode', default='one_policy', choices=['one_policy', 'two_policy'])
+    parser.add_argument('--train_mode', default='one_policy', choices=['one_policy', 'two_policy', 'joint_training'])
     parser.add_argument('--p1_checkpoint', type=str, default='epoch_12.pth', help="policy 1 checkpoint file (frozen but use during training's validation)")
 
     ## data augmentation
@@ -502,6 +564,12 @@ def main():
     optimizer = optim.Adam(list(policy.parameters()), lr = args.lrate, betas = (args.beta1, args.beta2))
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma)
 
+    if args.train_mode == 'joint_training':
+        policy2 = BC_Visual_Policy_Stochastic(action_size=args.action_size, img_size=args.env_image_size)
+        optimizer2 = optim.Adam(list(policy2.parameters()), lr = args.lrate, betas = (args.beta1, args.beta2))
+        scheduler2 = optim.lr_scheduler.StepLR(optimizer2, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma)
+        policy2.cuda()
+
     # load from checkpoint
     if args.load_saved or args.is_eval:
         checkpoint = torch.load(os.path.join(args.model_save_dir, args.checkpoint), map_location='cuda')
@@ -534,7 +602,10 @@ def main():
         if not os.path.exists(args.model_save_dir):
             os.makedirs(args.model_save_dir)
 
-        dataset = StateImageActionDataset(args, args.bc_data, transform=transform)
+        if args.train_mode == 'joint_training':
+            dataset = StateImageActionJointTrainingDataset(args, args.bc_data, transform=transform)
+        else:
+            dataset = StateImageActionDataset(args, args.bc_data, transform=transform)
         dataset_length = len(dataset)
         train_dataset, _ = torch.utils.data.random_split(dataset, [dataset_length, 0])
         dataloader_train = DataLoader(train_dataset, batch_size=args.batch_size, shuffle=True, num_workers=8, drop_last=True)
@@ -545,24 +616,48 @@ def main():
         outer = tqdm(total=args.end_epoch-start_epoch, desc='Epoch', position=start_epoch)
         for epoch in range(start_epoch, args.end_epoch):
             total_loss = 0.0
-
-            policy.train()
-
             print('\nprocessing training batch...')
-            for i, batch in enumerate(tqdm(dataloader_train)):
-                ac, img = batch['ac'], batch['img']
-                ac = ac.double().cuda()
-                img = img.double().cuda()
 
-                ac_pred = policy(img)
-                # ac mse
-                ac_predictor_loss = mse_loss(ac_pred, ac)
-                optimizer.zero_grad()
-                ac_predictor_loss.backward()
-                optimizer.step()
-                total_loss += ac_predictor_loss.data.item()
+            if args.train_mode == 'joint_training':
+                policy.train()
+                policy2.train()
+                for i, batch in enumerate(tqdm(dataloader_train)):
+                    p1_ac, p1_img = batch['p1_ac'], batch['p1_img']
+                    p2_ac, p2_img = batch['p2_ac'], batch['p2_img']
+                    p1_ac = p1_ac.double().cuda()
+                    p1_img = p1_img.double().cuda()
+                    p2_ac = p2_ac.double().cuda()
+                    p2_img = p2_img.double().cuda()
 
-            training_loss = total_loss / (args.batch_size*len(dataloader_train))
+                    p1_ac_pred = policy(p1_img)
+                    p2_ac_pred = policy2(p2_img)
+
+                    p1_ac_predictor_loss = mse_loss(p1_ac_pred, p1_ac)
+                    p2_ac_predictor_loss = mse_loss(p2_ac_pred, p2_ac)
+
+                    total_training_loss = p1_ac_predictor_loss + p2_ac_predictor_loss
+                    optimizer.zero_grad()
+                    optimizer2.zero_grad()
+                    total_training_loss.backward()
+                    optimizer.step()
+                    optimizer2.step()
+                    total_loss += total_training_loss.data.item()
+                training_loss = total_loss / (args.batch_size*len(dataloader_train)*2)
+            else:
+                policy.train()
+                for i, batch in enumerate(tqdm(dataloader_train)):
+                    ac, img = batch['ac'], batch['img']
+                    ac = ac.double().cuda()
+                    img = img.double().cuda()
+
+                    ac_pred = policy(img)
+                    # ac mse
+                    ac_predictor_loss = mse_loss(ac_pred, ac)
+                    optimizer.zero_grad()
+                    ac_predictor_loss.backward()
+                    optimizer.step()
+                    total_loss += ac_predictor_loss.data.item()
+                training_loss = total_loss / (args.batch_size*len(dataloader_train))
             train_loss.append(training_loss)
 
             print('')
@@ -571,17 +666,34 @@ def main():
             print('Action Prediction Loss (Train): ' + str(training_loss))
             print('----------------------------------------------------------------------')
 
-            scheduler.step()
-            # arrange/save checkpoint
-            checkpoint = {
-                'epoch': epoch + 1,
-                'state_dict': policy.state_dict(),
-                'optimizer': optimizer.state_dict(),
-                'scheduler': scheduler.state_dict(),
-            }
-            torch.save(checkpoint, os.path.join(args.model_save_dir, 'epoch_{}.pth'.format(epoch)))
+            if args.train_mode == 'joint_training':
+                scheduler.step()
+                scheduler2.step()
+                # arrange/save checkpoint
+                checkpoint = {
+                    'epoch': epoch + 1,
+                    'p1_state_dict': policy.state_dict(),
+                    'p1_optimizer': optimizer.state_dict(),
+                    'p1_scheduler': scheduler.state_dict(),
+                    'p2_state_dict': policy2.state_dict(),
+                    'p2_optimizer': optimizer2.state_dict(),
+                    'p2_scheduler': scheduler2.state_dict(),
+                }
+                torch.save(checkpoint, os.path.join(args.model_save_dir, 'epoch_{}.pth'.format(epoch)))
+                policy.eval()
+                policy2.eval()
+            else:
+                scheduler.step()
+                # arrange/save checkpoint
+                checkpoint = {
+                    'epoch': epoch + 1,
+                    'state_dict': policy.state_dict(),
+                    'optimizer': optimizer.state_dict(),
+                    'scheduler': scheduler.state_dict(),
+                }
+                torch.save(checkpoint, os.path.join(args.model_save_dir, 'epoch_{}.pth'.format(epoch)))
+                policy.eval()
 
-            policy.eval()
             # perform validation
             if epoch % args.eval_interval == 0:
                 total_success, total_rewards, total_lengths, total_subtasks = evaluation_obj.evaluate(checkpoint)
