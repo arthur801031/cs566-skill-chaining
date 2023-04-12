@@ -573,16 +573,17 @@ def main():
     # load from checkpoint
     if args.load_saved or args.is_eval:
         checkpoint = torch.load(os.path.join(args.model_save_dir, args.checkpoint), map_location='cuda')
-        start_epoch = checkpoint['epoch']
-        policy.load_state_dict(checkpoint['state_dict'])
-        optimizer.load_state_dict(checkpoint['optimizer'])
-        # fix for bug: RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!
-        # https://github.com/pytorch/pytorch/issues/2830#issuecomment-336031198
-        for state in optimizer.state.values():
-            for k, v in state.items():
-                if isinstance(v, torch.Tensor):
-                    state[k] = v.cuda()
-        scheduler.load_state_dict(checkpoint['scheduler'])
+        if args.load_saved:
+            start_epoch = checkpoint['epoch']
+            policy.load_state_dict(checkpoint['state_dict'])
+            optimizer.load_state_dict(checkpoint['optimizer'])
+            # fix for bug: RuntimeError: Expected all tensors to be on the same device, but found at least two devices, cuda:0 and cpu!
+            # https://github.com/pytorch/pytorch/issues/2830#issuecomment-336031198
+            for state in optimizer.state.values():
+                for k, v in state.items():
+                    if isinstance(v, torch.Tensor):
+                        state[k] = v.cuda()
+            scheduler.load_state_dict(checkpoint['scheduler'])
     else:
         start_epoch = args.start_epoch
 
