@@ -155,10 +155,10 @@ class StateImageActionDataset(Dataset):
         img = self.data['ob_images'][idx]
         ac = self.data['actions'][idx]
 
-        # customized data augmentations
-        if self.config.img_aug :
-            if self.config.random_crop:
-                img = self.random_crop_and_pad(img, self.config.random_crop_size)
+        # customized data augmentations: we don't need this because we're using self.transform
+        # if self.config.img_aug :
+        #     if self.config.random_crop:
+        #         img = self.random_crop_and_pad(img, self.config.random_crop_size)
 
         ac = torch.from_numpy(ac)
         img = torch.from_numpy(img)
@@ -223,8 +223,10 @@ class StateImageActionJointTrainingDataset(Dataset):
         return out
 
 class Evaluation:
-    def __init__(self, args):
+    def __init__(self, args, policy_input_image_size, transform=None):
         self.args = args
+        self.policy_input_image_size = policy_input_image_size
+        self.transform = transform
 
         # default arguments from skill-chaining
         from policy_sequencing_config import create_skill_chaining_parser
@@ -263,7 +265,7 @@ class Evaluation:
                 self.p2_checkpoint = torch.load(os.path.join(args.model_save_dir, args.p2_checkpoint), map_location='cuda')
         else:
             if args.train_mode == 'two_policy':
-                self.policy1_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+                self.policy1_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.policy_input_image_size)
                 self.policy1_eval.cuda()
                 self.policy1_eval.load_state_dict(torch.load(os.path.join(args.model_save_dir, args.p1_checkpoint), map_location='cuda')['state_dict'])
                 self.policy1_eval.eval()
@@ -290,6 +292,9 @@ class Evaluation:
         ob_image = cv2.resize(ob_image, (self.args.env_image_size, self.args.env_image_size))
         ob_image = np.transpose(ob_image, (2, 0, 1))
         ob_image = torch.from_numpy(ob_image).double().cuda()
+        if self.transform:
+            ob_image = self.transform(ob_image)
+
         return ob_image[None, :, :, :]
 
     def _save_video(self, fname, frames, fps=15.0):
@@ -374,32 +379,32 @@ class Evaluation:
         policies = []
         self.policy_list_enable = False
         if self.args.train_mode == 'two_policy':
-            policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+            policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.policy_input_image_size)
             policy2_eval.cuda()
             policy2_eval.load_state_dict(checkpoint['state_dict'])
             policy2_eval.eval()
             policies = [self.policy1_eval, policy2_eval]
             self.policy_list_enable = True
         elif self.args.train_mode == 'joint_training':
-            policy1_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+            policy1_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.policy_input_image_size)
             policy1_eval.cuda()
             policy1_eval.load_state_dict(checkpoint['p1_state_dict'])
             policy1_eval.eval()
 
-            policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+            policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.policy_input_image_size)
             policy2_eval.cuda()
             policy2_eval.load_state_dict(checkpoint['p2_state_dict'])
             policy2_eval.eval()
             policies = [policy1_eval, policy2_eval]
             self.policy_list_enable = True
         else:
-            policy_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+            policy_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.policy_input_image_size)
             policy_eval.cuda()
             policy_eval.load_state_dict(checkpoint['state_dict'])
             policy_eval.eval()
 
             if self.args.eval_mode == 'two_policy':
-                policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.args.env_image_size)
+                policy2_eval = BC_Visual_Policy_Stochastic(action_size=self.args.action_size, img_size=self.policy_input_image_size)
                 policy2_eval.cuda()
                 policy2_eval.load_state_dict(self.p2_checkpoint['state_dict'])
                 policy2_eval.eval()
@@ -540,17 +545,17 @@ def main():
 
     # image augmentations
     transform = None
+    policy_input_image_size = args.env_image_size
     # torchvision data augmentations style
     if args.img_aug:
-        # TODO: not tested
         img_augs = []
         if args.random_crop:
             img_augs.append(torchvision.transforms.RandomCrop(size=args.random_crop_size))
-            args.env_image_size = args.random_crop_size
+            policy_input_image_size = args.random_crop_size
         transform = torchvision.transforms.Compose(img_augs)
         print('Applying data augmentations on images...')
 
-    policy = BC_Visual_Policy_Stochastic(action_size=args.action_size, img_size=args.env_image_size)
+    policy = BC_Visual_Policy_Stochastic(action_size=args.action_size, img_size=policy_input_image_size)
     if args.wandb:
         wandb.init(
             project="skill-chaining",
@@ -565,7 +570,7 @@ def main():
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma)
 
     if args.train_mode == 'joint_training':
-        policy2 = BC_Visual_Policy_Stochastic(action_size=args.action_size, img_size=args.env_image_size)
+        policy2 = BC_Visual_Policy_Stochastic(action_size=args.action_size, img_size=policy_input_image_size)
         optimizer2 = optim.Adam(list(policy2.parameters()), lr = args.lrate, betas = (args.beta1, args.beta2))
         scheduler2 = optim.lr_scheduler.StepLR(optimizer2, step_size=args.scheduler_step_size, gamma=args.scheduler_gamma)
         policy2.cuda()
@@ -590,7 +595,7 @@ def main():
     policy.cuda()
     mse_loss.cuda()
 
-    evaluation_obj = Evaluation(args)
+    evaluation_obj = Evaluation(args, policy_input_image_size, transform)
 
     if args.is_eval:
         total_success, total_rewards, total_lengths, total_subtasks = evaluation_obj.evaluate(checkpoint)
