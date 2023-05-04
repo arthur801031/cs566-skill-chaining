@@ -123,7 +123,7 @@ python bc.py \
 --num_connects=2
 ```
 
-### Method Two
+### Method Two (Proposed Method)
 ```
 # Train policy one
 python bc.py \
